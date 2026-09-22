@@ -27,7 +27,7 @@ func ( s *Store) Get(key string)(string , bool){
 	 return value , ok 
 }
 
-func( s *Store) Delate( key string) bool {
+func( s *Store) Delete( key string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	  _ , exist := s.data[key]

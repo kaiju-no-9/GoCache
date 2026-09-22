@@ -23,7 +23,7 @@ func testingSetandGet ( t *testing.T){
 func testDelete (t *testing.T) {
 	s := New ()
 	s.Set("name" , "Adom")
-	deleted := s.Delate("name")
+	deleted := s.Delete("name")
 	if !deleted {
 		t.Fatalf("expected key 'name' to be deleted but it wasn't")
 	}
