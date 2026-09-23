@@ -5,9 +5,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaiju-no-9/GoCache.git/internal/store"
-	// "your-module-path/store" // Adjust to your actual store package import
 )
 
 type server struct {
@@ -15,8 +15,9 @@ type server struct {
 }
 
 type setRequest struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key   string  `json:"key"`
+	Value string  `json:"value"`
+	TTL   int     `json:"ttl"` // TTL in seconds; 0 means no expiry
 }
 
 type getResponse struct {
@@ -26,7 +27,7 @@ type getResponse struct {
 
 func main() {
 	s := &server{
-		store: store.New(),
+		store: store.New(3),
 	}
 
 	http.HandleFunc("/health", s.health)
@@ -86,8 +87,11 @@ func (s *server) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 
-	// Assuming your store has a Set method
-	s.store.Set(key, req.Value)
+	if req.TTL > 0 {
+		s.store.SetWithTTL(key, req.Value, time.Duration(req.TTL)*time.Second)
+	} else {
+		s.store.Set(key, req.Value)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

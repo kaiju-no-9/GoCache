@@ -10,7 +10,7 @@
  )
 
 func testingSetandGet ( t *testing.T){
-	s:= New()
+	s:= New(3)
       s.Set( "name" , "Adom")
 	   value , ok := s.Get("name")
 	   if !ok{
@@ -24,7 +24,7 @@ func testingSetandGet ( t *testing.T){
 }
 
 func testDelete (t *testing.T) {
-	s := New ()
+	s := New (3)
 	s.Set("name" , "Adom")
 	deleted := s.Delete("name")
 	if !deleted {
@@ -37,7 +37,7 @@ func testDelete (t *testing.T) {
 	}
 	
  func TestConcurrentAcess( t *testing.T){
-	  s := New()
+	  s := New(3)
 
 	  var wg sync.WaitGroup
 	  for i:= 0; i < 100;i++{
@@ -59,7 +59,7 @@ func testDelete (t *testing.T) {
 
 
  func BenchmarkGet( b *testing.B){
-      s := New()
+      s := New(3)
 
 	  s.Set("name" , "adam")
 	  for i:=0 ; i<b.N  ; i++{
@@ -71,7 +71,7 @@ func testDelete (t *testing.T) {
  // testing for TTL 
 
  func TestTLL ( t *testing.T){
-	s  := New()
+	s  := New(3)
    s.SetWithTTL( "name" , "adam" , 1*time.Second )
    v, ok := s.Get("name")
 	if !ok {
