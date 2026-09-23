@@ -2,13 +2,16 @@ package store
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kaiju-no-9/GoCache.git/internal/wal"
 )
 
 func TestSetAndGet(t *testing.T) {
-	s := New(3)
+	s := New(3, nil)
 	s.Set("name", "Adom")
 	value, ok := s.Get("name")
 	if !ok {
@@ -20,9 +23,9 @@ func TestSetAndGet(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	s := New(3)
+	s := New(3, nil)
 	s.Set("name", "Adom")
-	deleted := s.Delete("name")
+	deleted, _ := s.Delete("name")
 	if !deleted {
 		t.Fatalf("expected key 'name' to be deleted but it wasn't")
 	}
@@ -33,7 +36,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	s := New(100)
+	s := New(100, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -54,7 +57,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func BenchmarkGet(b *testing.B) {
-	s := New(3)
+	s := New(3, nil)
 
 	s.Set("name", "adam")
 	for i := 0; i < b.N; i++ {
@@ -65,7 +68,7 @@ func BenchmarkGet(b *testing.B) {
 // testing for TTL
 
 func TestTTL(t *testing.T) {
-	s := New(3)
+	s := New(3, nil)
 	s.SetWithTTL("name", "adam", 20*time.Millisecond)
 	v, ok := s.Get("name")
 	if !ok {
@@ -78,5 +81,43 @@ func TestTTL(t *testing.T) {
 	_, ok = s.Get("name")
 	if ok {
 		t.Fatalf("Expected key 'name' to not exist but it did")
+	}
+}
+
+// testing for WAL Recover
+
+func TestRecover(t *testing.T) {
+	file := "test_recover.wal"
+	defer os.Remove(file)
+
+	w, err := wal.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(3, w)
+	s.Set("name", "Adam")
+	s.Set("age", "20")
+	s.Delete("name")
+	w.Close()
+
+	w2, err := wal.Open(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.Close()
+
+	s2 := New(3, w2)
+	if err := s2.Recover(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := s2.Get("name"); ok {
+		t.Fatalf("expected key 'name' to be deleted")
+	}
+
+	v, ok := s2.Get("age")
+	if !ok || v != "20" {
+		t.Fatalf("expected key 'age' to be '20'")
 	}
 }

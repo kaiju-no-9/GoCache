@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/kaiju-no-9/GoCache.git/internal/store"
+	"github.com/kaiju-no-9/GoCache.git/internal/wal"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/kaiju-no-9/GoCache.git/internal/store"
 )
 
 type server struct {
@@ -15,9 +15,9 @@ type server struct {
 }
 
 type setRequest struct {
-	Key   string  `json:"key"`
-	Value string  `json:"value"`
-	TTL   int     `json:"ttl"` // TTL in seconds; 0 means no expiry
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	TTL   int    `json:"ttl"` // TTL in seconds; 0 means no expiry
 }
 
 type getResponse struct {
@@ -26,8 +26,19 @@ type getResponse struct {
 }
 
 func main() {
+	w, err := wal.Open("data.wal")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer w.Close()
+
 	s := &server{
-		store: store.New(3),
+		store: store.New(100, w),
+	}
+
+	// Recover : WAL
+	if err := s.store.Recover(); err != nil {
+		log.Fatal("failed to recover store:", err)
 	}
 
 	http.HandleFunc("/health", s.health)
@@ -88,18 +99,39 @@ func (s *server) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 	}
 
 	if req.TTL > 0 {
-		s.store.SetWithTTL(key, req.Value, time.Duration(req.TTL)*time.Second)
+		err := s.store.SetWithTTL(
+			key,
+			req.Value,
+			time.Duration(req.TTL)*time.Second,
+		)
+
+		if err != nil {
+			http.Error(w, "failed", http.StatusInternalServerError)
+			return
+		}
 	} else {
-		s.store.Set(key, req.Value)
+		err := s.store.Set(key, req.Value)
+
+		if err != nil {
+			http.Error(w, "failed", http.StatusInternalServerError)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) handleDelete(w http.ResponseWriter, key string) {
-	deleted := s.store.Delete(key)
+	deleted, err := s.store.Delete(key)
+
+	if err != nil {
+		http.Error(w, "failed", http.StatusInternalServerError)
+		return
+	}
+
 	if !deleted {
 		http.Error(w, "key not found", http.StatusNotFound)
 		return
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
