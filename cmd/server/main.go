@@ -1,17 +1,21 @@
-package main
+package main 
+ 
 
 import (
 	"encoding/json"
 	"github.com/kaiju-no-9/GoCache.git/internal/store"
 	"github.com/kaiju-no-9/GoCache.git/internal/wal"
+	"github.com/kaiju-no-9/GoCache.git/internal/node"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+	"flag"
 )
 
 type server struct {
 	store *store.Store
+	node *node.Node
 }
 
 type setRequest struct {
@@ -25,8 +29,14 @@ type getResponse struct {
 	Value string `json:"value"`
 }
 
+
 func main() {
-	w, err := wal.Open("data.wal")
+	nodeID := flag.String("id", "node1", "node ID")
+	port := flag.String("port", "8001", "server port")
+
+	flag.Parse()
+
+	w, err := wal.Open(*nodeID + ".wal")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -34,19 +44,25 @@ func main() {
 
 	s := &server{
 		store: store.New(100, w),
+		node: &node.Node{
+			ID:   *nodeID,
+			Addr: "localhost:" + *port,
+		},
 	}
-
-	// Recover : WAL
 	if err := s.store.Recover(); err != nil {
 		log.Fatal("failed to recover store:", err)
 	}
 
 	http.HandleFunc("/health", s.health)
+	http.HandleFunc("/node", s.nodeInfo)
 	http.HandleFunc("/kv/", s.handleKV)
 
-	log.Println("Cache server started on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal("server failed to start", err)
+	addr := ":" + *port
+
+	log.Printf("Cache server %s started on %s", *nodeID, addr)
+
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatal("server failed to start:", err)
 	}
 }
 
@@ -56,6 +72,13 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 	})
 }
+
+func (s *server) nodeInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.node)
+}
+
+
 
 // /kv/
 func (s *server) handleKV(w http.ResponseWriter, r *http.Request) {

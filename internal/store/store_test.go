@@ -65,7 +65,7 @@ func BenchmarkGet(b *testing.B) {
 	}
 }
 
-// testing for TTL
+
 
 func TestTTL(t *testing.T) {
 	s := New(3, nil)
@@ -84,7 +84,7 @@ func TestTTL(t *testing.T) {
 	}
 }
 
-// testing for WAL Recover
+
 
 func TestRecover(t *testing.T) {
 	file := "test_recover.wal"
