@@ -1,21 +1,23 @@
-package main 
- 
+package main
 
 import (
 	"encoding/json"
-	"github.com/kaiju-no-9/GoCache.git/internal/store"
-	"github.com/kaiju-no-9/GoCache.git/internal/wal"
-	"github.com/kaiju-no-9/GoCache.git/internal/node"
+	"flag"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-	"flag"
+
+	"github.com/kaiju-no-9/GoCache.git/internal/node"
+	"github.com/kaiju-no-9/GoCache.git/internal/peer"
+	"github.com/kaiju-no-9/GoCache.git/internal/store"
+	"github.com/kaiju-no-9/GoCache.git/internal/wal"
 )
 
 type server struct {
 	store *store.Store
-	node *node.Node
+	node  node.Node
+	peers []node.Node
 }
 
 type setRequest struct {
@@ -29,12 +31,34 @@ type getResponse struct {
 	Value string `json:"value"`
 }
 
+type peerStatusResponse struct {
+	ID     string `json:"id"`
+	Addr   string `json:"addr"`
+	Status string `json:"status"`
+}
 
 func main() {
 	nodeID := flag.String("id", "node1", "node ID")
 	port := flag.String("port", "8001", "server port")
 
 	flag.Parse()
+
+	// for testing hard coding the cluster
+	var peers []node.Node
+	for _, n := range []node.Node{
+		{
+			ID:   "node1",
+			Addr: "localhost:8001",
+		},
+		{
+			ID:   "node2",
+			Addr: "localhost:8002",
+		},
+	} {
+		if n.ID != *nodeID {
+			peers = append(peers, n)
+		}
+	}
 
 	w, err := wal.Open(*nodeID + ".wal")
 	if err != nil {
@@ -44,10 +68,11 @@ func main() {
 
 	s := &server{
 		store: store.New(100, w),
-		node: &node.Node{
+		node: node.Node{
 			ID:   *nodeID,
 			Addr: "localhost:" + *port,
 		},
+		peers: peers,
 	}
 	if err := s.store.Recover(); err != nil {
 		log.Fatal("failed to recover store:", err)
@@ -56,6 +81,8 @@ func main() {
 	http.HandleFunc("/health", s.health)
 	http.HandleFunc("/node", s.nodeInfo)
 	http.HandleFunc("/kv/", s.handleKV)
+	http.HandleFunc("/peers", s.peersInfo)
+	http.HandleFunc("/peer-status", s.peerStatus)
 
 	addr := ":" + *port
 
@@ -64,6 +91,30 @@ func main() {
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("server failed to start:", err)
 	}
+}
+
+// peer endpoint
+func (s *server) peersInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.peers)
+}
+
+func (s *server) peerStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var statuses []peerStatusResponse
+	for _, p := range s.peers {
+		client := peer.NewClient(p)
+		status := "healthy"
+		if err := client.Ping(); err != nil {
+			status = "unreachable"
+		}
+		statuses = append(statuses, peerStatusResponse{
+			ID:     p.ID,
+			Addr:   p.Addr,
+			Status: status,
+		})
+	}
+	json.NewEncoder(w).Encode(statuses)
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
@@ -77,8 +128,6 @@ func (s *server) nodeInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.node)
 }
-
-
 
 // /kv/
 func (s *server) handleKV(w http.ResponseWriter, r *http.Request) {
