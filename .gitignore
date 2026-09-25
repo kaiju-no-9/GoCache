@@ -1,2 +1,5 @@
 # WAL files
 *.wal
+
+# Binaries
+server
