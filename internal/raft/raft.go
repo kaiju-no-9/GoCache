@@ -28,6 +28,12 @@ type Raft struct {
 	log []LogEntry
 
 	electionTimeout time.Duration
+
+	commitIndex uint64
+    lastApplied uint64
+
+	nextIndex  map[string]uint64
+	matchIndex map[string]uint64
 }
 
 type RequestVoteArgs struct {
@@ -60,7 +66,11 @@ func New(id string) *Raft {
 		State:           follower,
 		CurrentTerm:     0,
 		VoteFor:         "",
+		resetCh:         make(chan struct{}, 1),
 		log:             make([]LogEntry, 0),
+
+		commitIndex : 0 , 
+        lastApplied  : 0 , 
 		electionTimeout: time.Duration(150+rand.Intn(150)) * time.Millisecond,
 	}
 }
@@ -77,11 +87,27 @@ func electionTimeout() time.Duration {
 	return 150*time.Millisecond + time.Duration(rand.Intn(150))*time.Millisecond
 }
 
-func (r *Raft) AppendCammand(op , key, value string) (bool, LogEntry){
+
+func (r *Raft) InitializeReplication(peers []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.State != leader{
+	r.nextIndex = make(map[string]uint64)
+	r.matchIndex = make(map[string]uint64)
+
+	next := uint64(len(r.log) + 1)
+
+	for _, peerID := range peers {
+		r.nextIndex[peerID] = next
+		r.matchIndex[peerID] = 0
+	}
+}
+
+func (r *Raft) AppendCammand(op, key, value string) (bool, LogEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.State != leader {
 		return false, LogEntry{}
 	}
 
@@ -98,11 +124,11 @@ func (r *Raft) AppendCammand(op , key, value string) (bool, LogEntry){
 
 }
 
-func (r *Raft) LastLog() (LogEntry ,bool){
-   r.mu.Lock()
-   defer r.mu.Unlock()
+func (r *Raft) LastLog() (LogEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-   if len(r.log) == 0 {
+	if len(r.log) == 0 {
 		return LogEntry{}, false
 	}
 
@@ -145,39 +171,6 @@ func (r *Raft) StartElectionTimer(onElection func()) {
 	}()
 }
 
-func (r *Raft) AppendEntries(args AppendEntriesArgs) AppendEntriesReply {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	reply := AppendEntriesReply{Term: r.CurrentTerm}
-
-	if args.Term < r.CurrentTerm {
-		reply.Success = false
-		return reply
-	}
-
-	if args.Term > r.CurrentTerm {
-		r.CurrentTerm = args.Term
-		r.VoteFor = ""
-	}
-	r.State = follower
-	reply.Term = r.CurrentTerm
-	reply.Success = true
-
-	select {
-	case r.resetCh <- struct{}{}:
-	default:
-	}
-
-	return reply
-}
-
-func (r *Raft) Status() (State, uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.State, r.CurrentTerm
-}
 
 func (r *Raft) RequestVote(args RequestVoteArgs) RequestVoteReply {
 	r.mu.Lock()
@@ -201,15 +194,29 @@ func (r *Raft) RequestVote(args RequestVoteArgs) RequestVoteReply {
 	if r.VoteFor == "" || r.VoteFor == args.CandidateID {
 		r.VoteFor = args.CandidateID
 		reply.VoteGranted = true
+		select {
+		case r.resetCh <- struct{}{}:
+		default:
+		}
 	}
 	return reply
 }
 
-func (r *Raft) BecomeLeader() {
+func (r *Raft) BecomeLeader(peers []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.State = leader
+    // here we are updatating the response from to leader .....
+	r.nextIndex = make(map[string]uint64)
+	r.matchIndex = make(map[string]uint64)
+
+	next := uint64(len(r.log) + 1)
+
+	for _, peerID := range peers {
+		r.nextIndex[peerID] = next
+		r.matchIndex[peerID] = 0
+	}
 }
 
 func (r *Raft) BecomeFollower(newTerm uint64) {
@@ -244,4 +251,139 @@ func (r *Raft) ElectionInfo() (uint64, string, bool) {
 	defer r.mu.Unlock()
 
 	return r.CurrentTerm, r.ID, r.State == candidate
+}
+func (r *Raft) ReplicationInfo(peerID string) (uint64, uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	next, ok := r.nextIndex[peerID]
+	if !ok {
+		return 0, 0, false
+	}
+
+	return next, r.commitIndex, true
+}
+
+func (r *Raft) AppendEntries(args AppendEntriesArgs) AppendEntriesReply {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reply := AppendEntriesReply{
+		Term:    r.CurrentTerm,
+		Success: false,
+	}
+
+	if args.Term < r.CurrentTerm {
+		return reply
+	}
+
+	if args.Term > r.CurrentTerm {
+		r.CurrentTerm = args.Term
+		r.VoteFor = ""
+	}
+
+	r.State = follower
+
+	if args.PreviousLogIndex > 0 {
+		if args.PreviousLogIndex > uint64(len(r.log)) {
+			return reply
+		}
+
+		prev := r.log[args.PreviousLogIndex-1]
+
+		if prev.Term != args.PreviousLogIndex {
+			return reply
+		}
+	}
+
+	for _, entry := range args.Entries {
+		if entry.Index <= uint64(len(r.log)) {
+			existing := r.log[entry.Index-1]
+
+			if existing.Term != entry.Term {
+				r.log = r.log[:entry.Index-1]
+				r.log = append(r.log, entry)
+			}
+		} else {
+			r.log = append(r.log, entry)
+		}
+	}
+
+	if args.LeaderCommit > r.commitIndex {
+		lastIndex := uint64(len(r.log))
+
+		if args.LeaderCommit < lastIndex {
+			r.commitIndex = args.LeaderCommit
+		} else {
+			r.commitIndex = lastIndex
+		}
+	}
+
+	reply.Term = r.CurrentTerm
+	reply.Success = true
+
+	return reply
+}
+func (r *Raft) Status() (State, uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.State, r.CurrentTerm
+}
+func (r *Raft) UpdateMatchIndex(peerID string, index uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if index > r.matchIndex[peerID] {
+		r.matchIndex[peerID] = index
+	}
+
+	r.nextIndex[peerID] = index + 1
+}
+func (r *Raft) TryCommit() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.State !=leader {
+		return r.commitIndex
+	}
+
+	totalNodes := len(r.matchIndex) + 1
+	majority := totalNodes/2 + 1
+
+	for index := uint64(len(r.log)); index > r.commitIndex; index-- {
+		votes := 1
+
+		for _, matchIndex := range r.matchIndex {
+			if matchIndex >= index {
+				votes++
+			}
+		}
+		if votes >= majority {
+			entry := r.log[index-1]
+
+			if entry.Term == r.CurrentTerm {
+				r.commitIndex = index
+			}
+
+			break
+		}
+	}
+	return r.commitIndex
+}
+
+func (r *Raft) ApplyCommitted(
+	apply func(LogEntry),
+) {
+	r.mu.Lock()
+	var entries []LogEntry
+	for r.lastApplied < r.commitIndex {
+		entry := r.log[r.lastApplied]
+		entries = append(entries, entry)
+		r.lastApplied++
+	}
+	r.mu.Unlock()
+	for _, entry := range entries {
+		apply(entry)
+	}
 }

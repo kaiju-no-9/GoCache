@@ -112,3 +112,9 @@ func (c *Client) AppendEntries(args raft.AppendEntriesArgs) (raft.AppendEntriesR
 
 	return reply, nil
 }
+
+
+
+func (c *Client) NodeID() string {
+	return c.node.ID
+}

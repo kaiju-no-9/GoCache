@@ -304,8 +304,6 @@ func (s *server) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-
-
 func (s *server) requestVote(w http.ResponseWriter, r *http.Request) {
 	var args raft.RequestVoteArgs
 
@@ -361,7 +359,6 @@ func (s *server) RunElection() {
 			continue
 		}
 
-		
 		if reply.Term > term {
 			log.Printf(
 				"raft node=%s stepping down: peer has higher term %d",
@@ -383,7 +380,12 @@ func (s *server) RunElection() {
 	totalNodes := len(s.peers) + 1
 	majority := totalNodes/2 + 1
 	if votes >= majority {
-		s.raft.BecomeLeader()
+		peerIDs := make([]string, 0, len(s.peers))
+
+      for _, p := range s.peers {
+	    peerIDs = append(peerIDs, p.ID)
+        }
+       s.raft.BecomeLeader(peerIDs)
 
 		log.Printf(
 			"raft node=%s became leader term=%d votes=%d/%d",
@@ -411,21 +413,53 @@ func (s *server) sendHeartbeats() {
 		if !s.raft.IsLeader() {
 			continue
 		}
+
 		_, term := s.raft.Status()
-		entry, hasEntry := s.raft.LastLog()
-		var entries []raft.LogEntry
-		if hasEntry {
-			entries = []raft.LogEntry{entry}
-		}
+
 		for _, client := range s.peerClient {
-			go func(c *peer.Client, entries []raft.LogEntry) {
-				reply, err := c.AppendEntries(raft.AppendEntriesArgs{
-					Term:     term,
-					LeaderID: s.node.ID,
-					Entries:  entries,
-				})
+			go func(c *peer.Client) {
+				nextIndex, commitIndex, ok :=
+					s.raft.ReplicationInfo(c.NodeID())
+
+				if !ok {
+					return
+				}
+
+				var prevLogIndex uint64
+				var prevLogTerm uint64
+				var entries []raft.LogEntry
+
+				// We need the entries starting from nextIndex.
+				logEntries := s.raft.Log()
+
+				if nextIndex > 1 {
+					prevLogIndex = nextIndex - 1
+
+					if prevLogIndex <= uint64(len(logEntries)) {
+						prevLogTerm = logEntries[prevLogIndex-1].Term
+					}
+				}
+
+				if nextIndex <= uint64(len(logEntries)) {
+					entries = logEntries[nextIndex-1:]
+				}
+
+				reply, err := c.AppendEntries(
+					raft.AppendEntriesArgs{
+						Term:         term,
+						LeaderID:     s.node.ID,
+						PreviousLogIndex: prevLogIndex,
+						PreviousLogTerm:  prevLogTerm,
+						Entries:      entries,
+						LeaderCommit: commitIndex,
+					},
+				)
+
 				if err != nil {
-					log.Printf("heartbeat to peer failed: %v", err)
+					log.Printf(
+						"heartbeat to peer failed: %v",
+						err,
+					)
 					return
 				}
 
@@ -435,13 +469,23 @@ func (s *server) sendHeartbeats() {
 						s.node.ID,
 						reply.Term,
 					)
+
 					s.raft.BecomeFollower(reply.Term)
+					return
 				}
-			}(client, entries)
+
+				if reply.Success && len(entries) > 0 {
+					last := entries[len(entries)-1]
+
+					s.raft.UpdateMatchIndex(
+						c.NodeID(),
+						last.Index,
+					)
+				}
+			}(client)
 		}
 	}
 }
-
 func (s *server) appendEntries(w http.ResponseWriter, r *http.Request) {
 	var args raft.AppendEntriesArgs
 
@@ -460,4 +504,16 @@ func (s *server) raftLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	json.NewEncoder(w).Encode(s.raft.Log())
+}
+
+func (s *server) applyRaftEntry(entry raft.LogEntry) {
+	switch entry.Op {
+	case "set":
+		if err := s.store.Set(entry.Key, entry.Value); err != nil {
+			log.Printf(
+				"failed to apply raft entry: %v",
+				err,
+			)
+		}
+	}
 }
