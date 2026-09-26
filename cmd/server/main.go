@@ -129,6 +129,7 @@ func main() {
 	http.HandleFunc("/peer-status", s.peerStatus)
 	http.HandleFunc("/raft/request-vote", s.requestVote)
 	http.HandleFunc("/raft/append-entries", s.appendEntries)
+	http.HandleFunc("/raft/log", s.raftLog)
 	addr := ":" + *port
 
 	log.Printf(
@@ -261,10 +262,24 @@ func (s *server) handleGet(w http.ResponseWriter, key string) {
 
 func (s *server) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 	var req setRequest
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+
+	ok, entry := s.raft.AppendCammand("set", key, req.Value)
+	if !ok {
+		http.Error(w, "not leader", http.StatusServiceUnavailable)
+		return
+	}
+
+	log.Printf(
+		"raft append: index=%d term=%d key=%s",
+		entry.Index,
+		entry.Term,
+		entry.Key,
+	)
 
 	if req.TTL > 0 {
 		err := s.store.SetWithTTL(
@@ -285,8 +300,11 @@ func (s *server) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 			return
 		}
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
+
+
 
 func (s *server) requestVote(w http.ResponseWriter, r *http.Request) {
 	var args raft.RequestVoteArgs
@@ -393,14 +411,18 @@ func (s *server) sendHeartbeats() {
 		if !s.raft.IsLeader() {
 			continue
 		}
-
 		_, term := s.raft.Status()
-
+		entry, hasEntry := s.raft.LastLog()
+		var entries []raft.LogEntry
+		if hasEntry {
+			entries = []raft.LogEntry{entry}
+		}
 		for _, client := range s.peerClient {
-			go func(c *peer.Client) {
+			go func(c *peer.Client, entries []raft.LogEntry) {
 				reply, err := c.AppendEntries(raft.AppendEntriesArgs{
 					Term:     term,
 					LeaderID: s.node.ID,
+					Entries:  entries,
 				})
 				if err != nil {
 					log.Printf("heartbeat to peer failed: %v", err)
@@ -410,11 +432,12 @@ func (s *server) sendHeartbeats() {
 				if reply.Term > term {
 					log.Printf(
 						"raft node=%s stepping down: peer has higher term %d",
-						s.node.ID, reply.Term,
+						s.node.ID,
+						reply.Term,
 					)
 					s.raft.BecomeFollower(reply.Term)
 				}
-			}(client)
+			}(client, entries)
 		}
 	}
 }
@@ -431,4 +454,10 @@ func (s *server) appendEntries(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(reply)
+}
+
+func (s *server) raftLog(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	json.NewEncoder(w).Encode(s.raft.Log())
 }
