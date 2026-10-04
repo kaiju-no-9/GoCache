@@ -7,7 +7,7 @@ GoCache is a learning project for a concurrent key/value cache with TTL, LRU evi
 ```mermaid
 flowchart LR
     Client[HTTP Client] --> API[HTTP API]
-    API --> Router[Shard Router<br/>FNV-1a(key) % 3]
+    API --> Router[Shard Router - FNV-1a modulo 3]
     Router --> S0[Shard 0]
     Router --> S1[Shard 1]
     Router --> S2[Shard 2]
@@ -56,36 +56,6 @@ curl http://localhost:800X/raft/log
 
 Set `"ttl": 10` in the PUT JSON to expire the value after ten seconds. Omit TTL or use zero for no expiration. Check routing with `curl http://localhost:800X/shard/foo`; routing is deterministic and reports the computed shard ID without hardcoded key mappings.
 
-Useful endpoints:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /health` | Process liveness |
-| `GET /node`, `GET /peers`, `GET /peer-status`, `GET /ping-peer` | Node and peer inspection |
-| `GET /raft/status`, `GET /raft/log` | Raft role, term, commit index, and local log |
-| `POST /raft/request-vote`, `POST /raft/append-entries` | Internal Raft RPCs |
-| `GET /metrics` | JSON request, cache, Raft, and peer counters |
-| `GET /shard/{key}` | Deterministic shard mapping |
-| `GET`, `PUT`, `DELETE /kv/{key}` | Key/value operations |
-
-## Failure demo
-
-1. Start all three nodes and inspect each `/raft/status` until one reports `leader`.
-2. Stop the leader process with Ctrl-C.
-3. Wait for the remaining nodes to elect a leader, then inspect their `/raft/status` endpoints.
-4. Send a PUT to the new leader and inspect `/raft/log` on the live nodes.
-5. Restart the old node with its original ID and port. It should receive AppendEntries as a follower and catch up its in-memory Raft log.
-
-## Technologies and approaches
-
-- **Go:** HTTP server, goroutines, mutexes, and atomic counters.
-- **Storage:** in-memory map with `container/list` for LRU eviction; TTL uses absolute expiration times.
-- **Persistence:** newline-delimited JSON WAL records, synced on writes.
-- **Cluster communication:** JSON over HTTP with three statically configured nodes.
-- **Consensus:** a small educational Raft implementation with elections, heartbeats, log replication, and majority commit.
-- **Sharding:** fixed deterministic `FNV-1a(key) % 3` routing; all local shards share the node's Raft group.
-- **Design approach:** keep the cluster static and the implementation small; reads are local and writes require the leader.
-
 ## Tests and benchmarks
 
 ```bash
@@ -105,6 +75,10 @@ Sample benchmark output from an Apple M2 (Darwin ARM64), using `go test -race -b
 | `BenchmarkSetGet` | 3,439 ns/op |
 
 Benchmark results vary by machine and load. Re-run the command above to measure your system.
+
+Benchmark output from the Apple M2 run:
+
+![GoCache benchmark results](docs/benchmark-results.png)
 
 ## Limitations
 
