@@ -20,8 +20,6 @@ flowchart LR
     Stores --> WAL[Per-shard WAL files]
 ```
 
-Each node has three local stores selected by `FNV-1a(key) % 3`. All three logical shards share that node's single Raft group; this project does not implement independent Raft groups per shard. A leader appends writes to its log, replicates with HTTP `AppendEntries`, waits for majority commit, then applies the command to its shard store. Followers apply committed entries when they receive the updated leader commit index. TTL writes carry the same absolute expiry timestamp to every replica. Reads are local.
-
 ## Run a 3-node cluster
 
 Run each command in a separate terminal from the repository root:
@@ -65,20 +63,6 @@ go test -bench=. ./...
 # Run benchmarks with the race detector too:
 go test -race -bench=. ./...
 ```
-
-Sample benchmark output from an Apple M2 (Darwin ARM64), using `go test -race -bench=. ./...`:
-
-| Benchmark | Sample time |
-| --- | ---: |
-| `BenchmarkGet` | 765.6 ns/op |
-| `BenchmarkSet` | 3,116 ns/op |
-| `BenchmarkSetGet` | 3,439 ns/op |
-
-Benchmark results vary by machine and load. Re-run the command above to measure your system.
-
-Benchmark output from the Apple M2 run:
-
-![GoCache benchmark results](docs/benchmark-results.png)
 
 ## Limitations
 
