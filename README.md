@@ -64,6 +64,6 @@ go test -bench=. ./...
 go test -race -bench=. ./...
 ```
 
-## Limitations
+![GoCache benchmark screenshot](docs/benchmark-results.png)
 
-GoCache is a learning implementation. It does not provide production-grade consensus, dynamic cluster membership, consistent hashing, shard rebalancing, snapshots, log compaction, linearizable reads, transactions, production authentication, TLS, production persistence guarantees, automatic leader proxying, or sophisticated failure detection. Raft logs are in memory; local WALs persist applied store mutations, not the full Raft protocol state. Restart recovery therefore does not provide the durability guarantees of a production consensus system.
+
