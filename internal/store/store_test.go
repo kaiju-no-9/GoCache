@@ -65,7 +65,25 @@ func BenchmarkGet(b *testing.B) {
 	}
 }
 
+func BenchmarkSet(b *testing.B) {
+	s := New(b.N, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.Set(fmt.Sprintf("key_%d", i), "value")
+	}
+}
 
+func BenchmarkSetGet(b *testing.B) {
+	s := New(100, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("key_%d", i%100)
+		if err := s.Set(key, "value"); err != nil {
+			b.Fatal(err)
+		}
+		s.Get(key)
+	}
+}
 
 func TestTTL(t *testing.T) {
 	s := New(3, nil)
@@ -84,7 +102,27 @@ func TestTTL(t *testing.T) {
 	}
 }
 
-
+func TestMissingKeyAndLRUEviction(t *testing.T) {
+	s := New(2, nil)
+	if _, ok := s.Get("missing"); ok {
+		t.Fatal("missing key should not be found")
+	}
+	if err := s.Set("a", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("b", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("a"); !ok {
+		t.Fatal("expected a to exist")
+	}
+	if err := s.Set("c", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("b"); ok {
+		t.Fatal("least recently used key b should have been evicted")
+	}
+}
 
 func TestRecover(t *testing.T) {
 	file := "test_recover.wal"

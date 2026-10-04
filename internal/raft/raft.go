@@ -30,7 +30,7 @@ type Raft struct {
 	electionTimeout time.Duration
 
 	commitIndex uint64
-    lastApplied uint64
+	lastApplied uint64
 
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
@@ -62,31 +62,31 @@ type AppendEntriesReply struct {
 
 func New(id string) *Raft {
 	return &Raft{
-		ID:              id,
-		State:           follower,
-		CurrentTerm:     0,
-		VoteFor:         "",
-		resetCh:         make(chan struct{}, 1),
-		log:             make([]LogEntry, 0),
+		ID:          id,
+		State:       follower,
+		CurrentTerm: 0,
+		VoteFor:     "",
+		resetCh:     make(chan struct{}, 1),
+		log:         make([]LogEntry, 0),
 
-		commitIndex : 0 , 
-        lastApplied  : 0 , 
+		commitIndex:     0,
+		lastApplied:     0,
 		electionTimeout: time.Duration(150+rand.Intn(150)) * time.Millisecond,
 	}
 }
 
 type LogEntry struct {
-	Term  uint64 `json:"term"`
-	Index uint64 `json:"index"`
-	Op    string `json:"op"`
-	Key   string `json:"key"`
-	Value string `json:"value,omitempty"`
+	Term      uint64 `json:"term"`
+	Index     uint64 `json:"index"`
+	Op        string `json:"op"`
+	Key       string `json:"key"`
+	Value     string `json:"value,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
 }
 
 func electionTimeout() time.Duration {
 	return 150*time.Millisecond + time.Duration(rand.Intn(150))*time.Millisecond
 }
-
 
 func (r *Raft) InitializeReplication(peers []string) {
 	r.mu.Lock()
@@ -103,7 +103,7 @@ func (r *Raft) InitializeReplication(peers []string) {
 	}
 }
 
-func (r *Raft) AppendCammand(op, key, value string) (bool, LogEntry) {
+func (r *Raft) AppendCommand(op, key, value string, expiresAt int64) (bool, LogEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -112,11 +112,12 @@ func (r *Raft) AppendCammand(op, key, value string) (bool, LogEntry) {
 	}
 
 	entry := LogEntry{
-		Term:  r.CurrentTerm,
-		Index: uint64(len(r.log) + 1),
-		Op:    op,
-		Key:   key,
-		Value: value,
+		Term:      r.CurrentTerm,
+		Index:     uint64(len(r.log) + 1),
+		Op:        op,
+		Key:       key,
+		Value:     value,
+		ExpiresAt: expiresAt,
 	}
 
 	r.log = append(r.log, entry)
@@ -171,7 +172,6 @@ func (r *Raft) StartElectionTimer(onElection func()) {
 	}()
 }
 
-
 func (r *Raft) RequestVote(args RequestVoteArgs) RequestVoteReply {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -207,7 +207,7 @@ func (r *Raft) BecomeLeader(peers []string) {
 	defer r.mu.Unlock()
 
 	r.State = leader
-    // here we are updatating the response from to leader .....
+	// here we are updatating the response from to leader .....
 	r.nextIndex = make(map[string]uint64)
 	r.matchIndex = make(map[string]uint64)
 
@@ -283,6 +283,10 @@ func (r *Raft) AppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 	}
 
 	r.State = follower
+	select {
+	case r.resetCh <- struct{}{}:
+	default:
+	}
 
 	if args.PreviousLogIndex > 0 {
 		if args.PreviousLogIndex > uint64(len(r.log)) {
@@ -291,7 +295,7 @@ func (r *Raft) AppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 
 		prev := r.log[args.PreviousLogIndex-1]
 
-		if prev.Term != args.PreviousLogIndex {
+		if prev.Term != args.PreviousLogTerm {
 			return reply
 		}
 	}
@@ -300,7 +304,7 @@ func (r *Raft) AppendEntries(args AppendEntriesArgs) AppendEntriesReply {
 		if entry.Index <= uint64(len(r.log)) {
 			existing := r.log[entry.Index-1]
 
-			if existing.Term != entry.Term {
+			if existing.Term != entry.Term || existing.Op != entry.Op || existing.Key != entry.Key || existing.Value != entry.Value || existing.ExpiresAt != entry.ExpiresAt {
 				r.log = r.log[:entry.Index-1]
 				r.log = append(r.log, entry)
 			}
@@ -334,17 +338,30 @@ func (r *Raft) UpdateMatchIndex(peerID string, index uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if index > r.matchIndex[peerID] {
+	if index >= r.matchIndex[peerID] {
 		r.matchIndex[peerID] = index
+		r.nextIndex[peerID] = index + 1
 	}
+}
 
-	r.nextIndex[peerID] = index + 1
+func (r *Raft) BackoffNextIndex(peerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nextIndex[peerID] > 1 {
+		r.nextIndex[peerID]--
+	}
+}
+
+func (r *Raft) CommitIndex() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.commitIndex
 }
 func (r *Raft) TryCommit() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.State !=leader {
+	if r.State != leader {
 		return r.commitIndex
 	}
 

@@ -36,30 +36,9 @@ func New(capacity int, w *wal.WAL) *Store {
 
 // guard rail
 func (s *Store) Set(key string, value string) error {
-	item := Item{
-		Value: value,
-	}
-
-	if s.wal != nil {
-		err := s.wal.Write(wal.Command{
-			Op:    "SET",
-			Key:   key,
-			Value: value,
-		})
-
-		if err != nil {
-			return err
-		}
-	}
-
-	s.set(key, item)
-
-	return nil
+	return s.SetWithExpiry(key, value, time.Time{})
 }
-func (s *Store) set(key string, item Item) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) setLocked(key string, item Item) {
 	if element, ok := s.data[key]; ok {
 		element.Value.(*entry).item = item
 
@@ -79,6 +58,12 @@ func (s *Store) set(key string, item Item) {
 	}
 }
 
+func (s *Store) set(key string, item Item) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setLocked(key, item)
+}
+
 func (s *Store) evict() {
 	element := s.lru.Back()
 
@@ -95,20 +80,22 @@ func (s *Store) evict() {
 
 // set with ttl
 func (s *Store) SetWithTTL(key string, value string, ttl time.Duration) error {
+	return s.SetWithExpiry(key, value, time.Now().Add(ttl))
+}
 
-	expiresAt := time.Now().Add(ttl)
-
-	item := Item{
-		Value:     value,
-		ExpiresAt: expiresAt,
-	}
+// SetWithExpiry stores a value with a shared absolute expiration timestamp.
+// A zero timestamp means the value does not expire.
+func (s *Store) SetWithExpiry(key, value string, expiresAt time.Time) error {
+	item := Item{Value: value, ExpiresAt: expiresAt}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.wal != nil {
 		err := s.wal.Write(wal.Command{
 			Op:        "SET",
 			Key:       key,
 			Value:     value,
-			ExpiresAt: expiresAt.UnixNano(),
+			ExpiresAt: unixNanoOrZero(expiresAt),
 		})
 
 		if err != nil {
@@ -116,9 +103,16 @@ func (s *Store) SetWithTTL(key string, value string, ttl time.Duration) error {
 		}
 	}
 
-	s.set(key, item)
+	s.setLocked(key, item)
 
 	return nil
+}
+
+func unixNanoOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
 }
 
 // get
@@ -174,10 +168,28 @@ func (s *Store) Delete(key string) (bool, error) {
 
 	return true, nil
 }
+
+// ApplyDelete durably applies a delete from a committed Raft entry, even when
+// this replica did not currently have the key. Recording the tombstone keeps
+// an older value from returning during WAL recovery.
+func (s *Store) ApplyDelete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wal != nil {
+		if err := s.wal.Write(wal.Command{Op: "DELETE", Key: key}); err != nil {
+			return err
+		}
+	}
+	s.deleteLocked(key)
+	return nil
+}
 func (s *Store) deleteInternal(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deleteLocked(key)
+}
 
+func (s *Store) deleteLocked(key string) {
 	element, ok := s.data[key]
 	if !ok {
 		return
